@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { HttpModule } from '@nestjs/axios';
 import { TransfersController } from './transfers.controller';
 import { TransfersService } from './transfers.service';
 import { Transfer, TransferSchema } from './schemas/transfer.schema';
@@ -11,8 +12,9 @@ import { ComplianceModule } from '../compliance/compliance.module';
         MongooseModule.forFeature([
             { name: Transfer.name, schema: TransferSchema },
         ]),
+        HttpModule,
         StateMachineModule,
-        ComplianceModule,
+        forwardRef(() => ComplianceModule),
     ],
     controllers: [TransfersController],
     providers: [TransfersService],

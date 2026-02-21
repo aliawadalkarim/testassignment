@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:7
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: mongosh --eval 'db.runCommand("ping").ok' --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  fx-service:
+    build: ./services/fx-service
+    ports:
+      - '3001:3001'
+    environment:
+      - FX_SERVICE_PORT=3001
+
+  payout-simulator:
+    build: ./services/payout-simulator
+    ports:
+      - '3002:3002'
+    environment:
+      - PAYOUT_SERVICE_PORT=3002
+      - ORCHESTRATOR_WEBHOOK_URL=http://orchestrator:3000/webhooks/payout-status
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-super-secret-webhook-key-change-me}
+    depends_on:
+      orchestrator:
+        condition: service_started
+
+  orchestrator:
+    build: ./services/orchestrator
+    ports:
+      - '3000:3000'
+    environment:
+      - PORT=3000
+      - MONGO_URI=mongodb://mongodb:27017/remittance
+      - FX_SERVICE_URL=http://fx-service:3001
+      - PAYOUT_SERVICE_URL=http://payout-simulator:3002
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-super-secret-webhook-key-change-me}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      fx-service:
+        condition: service_started
+
+volumes:
+  mongo-data:

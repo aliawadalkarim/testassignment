@@ -97,7 +97,7 @@ export class ComplianceService {
             status: TransferStatus.COMPLIANCE_APPROVED,
             decision: {
                 decision: 'APPROVED',
-                triggeredRules: ['NONE'],
+                triggeredRules: [],
                 timestamp: new Date(),
             },
         };

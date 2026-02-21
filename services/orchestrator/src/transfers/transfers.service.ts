@@ -6,26 +6,27 @@ import {
     ConflictException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { ConfigService } from '@nestjs/config';
+import { HttpService } from '@nestjs/axios';
 import { Model } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
-import axios from 'axios';
 import { Transfer, TransferDocument } from './schemas/transfer.schema';
 import { TransferStatus } from '../common/interfaces';
 import { StateMachineService } from '../state-machine/state-machine.service';
 import { ComplianceService } from '../compliance/compliance.service';
 import { CreateTransferDto } from './dto/create-transfer.dto';
-import configuration from '../common/config/configuration';
 
 @Injectable()
 export class TransfersService {
     private readonly logger = new Logger(TransfersService.name);
-    private readonly config = configuration();
 
     constructor(
         @InjectModel(Transfer.name)
         private readonly transferModel: Model<TransferDocument>,
         private readonly stateMachine: StateMachineService,
         private readonly complianceService: ComplianceService,
+        private readonly httpService: HttpService,
+        private readonly configService: ConfigService,
     ) { }
 
     /**
@@ -55,8 +56,9 @@ export class TransfersService {
 
         // Fetch quote from FX service
         try {
-            const quoteResponse = await axios.post(
-                `${this.config.fxServiceUrl}/quote`,
+            const fxServiceUrl = this.configService.get<string>('fxServiceUrl');
+            const quoteResponse = await this.httpService.axiosRef.post(
+                `${fxServiceUrl}/quote`,
                 {
                     sendAmount: dto.sendAmount,
                     sendCurrency: dto.sendCurrency,
@@ -151,7 +153,7 @@ export class TransfersService {
         }
 
         // Lock the quote snapshot (immutable from this point)
-        transfer.confirmedQuoteSnapshot = { ...transfer.quote };
+        transfer.confirmedQuoteSnapshot = structuredClone(transfer.quote);
 
         // Transition to CONFIRMED
         transfer.status = TransferStatus.CONFIRMED;
@@ -331,7 +333,7 @@ export class TransfersService {
             this.stateMachine.validateTransition(currentStatus, TransferStatus.PAID);
 
             transfer.status = TransferStatus.PAID;
-            transfer.final = {
+            transfer.financialSummary = {
                 paidAmount: amount,
                 feesCharged: transfer.confirmedQuoteSnapshot?.fee,
             };
@@ -359,7 +361,7 @@ export class TransfersService {
             );
 
             transfer.status = TransferStatus.REFUNDED;
-            transfer.final = {
+            transfer.financialSummary = {
                 refundedAmount: transfer.sendAmount,
                 feesCharged: 0,
             };
@@ -406,8 +408,9 @@ export class TransfersService {
         );
 
         try {
-            const response = await axios.post(
-                `${this.config.payoutServiceUrl}/partner/payouts`,
+            const payoutServiceUrl = this.configService.get<string>('payoutServiceUrl');
+            const response = await this.httpService.axiosRef.post(
+                `${payoutServiceUrl}/partner/payouts`,
                 {
                     transferId: transfer.transferId,
                     amount: transfer.confirmedQuoteSnapshot!.payoutAmount,
@@ -462,7 +465,7 @@ export class TransfersService {
                         stateHistory: transfer.stateHistory,
                         quote: transfer.quote,
                         confirmedQuoteSnapshot: transfer.confirmedQuoteSnapshot,
-                        final: transfer.final,
+                        financialSummary: transfer.financialSummary,
                         complianceDecision: transfer.complianceDecision,
                         partnerPayoutId: transfer.partnerPayoutId,
                         version: expectedVersion,

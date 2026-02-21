@@ -65,7 +65,7 @@ export interface ITransfer {
     stateHistory: IStateHistoryEntry[];
     quote?: IQuote;
     confirmedQuoteSnapshot?: IQuote;
-    final?: IFinancialSummary;
+    financialSummary?: IFinancialSummary;
     complianceDecision?: IComplianceDecision;
     partnerPayoutId?: string;
     version: number;

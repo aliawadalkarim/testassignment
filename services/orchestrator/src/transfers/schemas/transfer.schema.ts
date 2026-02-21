@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory, raw } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
-import { TransferStatus } from '../common/interfaces';
+import { TransferStatus } from '../../common/interfaces';
 
 export type TransferDocument = Transfer & Document;
 
@@ -117,7 +117,7 @@ export class Transfer {
             feesCharged: { type: Number },
         }),
     )
-    final?: {
+    financialSummary?: {
         paidAmount?: number;
         refundedAmount?: number;
         feesCharged?: number;
