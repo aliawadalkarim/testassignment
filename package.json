@@ -1,0 +1,9 @@
+{
+    "name": "testassignment",
+    "private": true,
+    "scripts": {
+        "install:all": "cd services/orchestrator && npm install && cd ../fx-service && npm install && cd ../payout-simulator && npm install",
+        "build:all": "cd services/orchestrator && npm run build && cd ../fx-service && npm run build && cd ../payout-simulator && npm run build",
+        "test:all": "cd services/orchestrator && npm test && cd ../fx-service && npm test && cd ../payout-simulator && npm test"
+    }
+}
