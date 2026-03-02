@@ -83,6 +83,4 @@ Each decision is persisted with: decision, triggered rules, timestamp, and revie
 
 8. **Monitoring**: Prometheus metrics, Grafana dashboards, PagerDuty alerts for failed payouts, stuck transfers, and compliance review SLAs.
 
-9. **Idempotency Keys**: Accept client-provided idempotency keys on `POST /transfers` to prevent duplicate transfer creation on network retries.
-
-10. **Audit Log**: Separate audit log table with immutable, append-only entries for every state change — required for financial compliance.
+9. **Audit Log**: Separate audit log table with immutable, append-only entries for every state change — required for financial compliance.
