@@ -1,11 +1,25 @@
 import { ComplianceService } from '../../src/compliance/compliance.service';
 import { TransferStatus } from '../../src/common/interfaces';
+import { ConfigService } from '@nestjs/config';
 
 describe('ComplianceService', () => {
     let service: ComplianceService;
 
     beforeEach(() => {
-        service = new ComplianceService();
+        const configMap: Record<string, unknown> = {
+            'compliance.blockedCountries': ['KP', 'IR', 'SY', 'CU'],
+            'compliance.sanctionedNames': ['JOHN DOE SANCTIONED', 'JANE TERRORIST', 'BLOCKED PERSON', 'SANCTIONED INDIVIDUAL'],
+            'compliance.manualReviewThreshold': 10000,
+        };
+
+        const mockConfigService = {
+            getOrThrow: jest.fn().mockImplementation((key: string) => {
+                if (configMap[key] === undefined) throw new Error(`Missing config key: ${key}`);
+                return configMap[key];
+            }),
+        } as unknown as ConfigService;
+
+        service = new ComplianceService(mockConfigService);
     });
 
     describe('country blocklist', () => {

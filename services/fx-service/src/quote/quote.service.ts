@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { v4 as uuidv4 } from 'uuid';
 import { CreateQuoteDto } from './dto/create-quote.dto';
@@ -27,22 +28,44 @@ interface CachedRates {
     fetchedAt: number;
 }
 
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const API_BASE_URL = 'https://open.er-api.com/v6/latest';
-
 @Injectable()
 export class QuoteService implements OnModuleInit {
     private readonly logger = new Logger(QuoteService.name);
     private rateCache = new Map<string, CachedRates>();
 
-    constructor(private readonly httpService: HttpService) { }
+    // Config values
+    private readonly apiBaseUrl: string;
+    private readonly apiTimeoutMs: number;
+    private readonly cacheTtlMs: number;
+    private readonly preWarmCurrencies: string[];
+    private readonly spreadPercent: number;
+    private readonly flatFee: number;
+    private readonly percentFee: number;
+    private readonly quoteExpiryMs: number;
+
+    constructor(
+        private readonly httpService: HttpService,
+        private readonly configService: ConfigService,
+    ) {
+        this.apiBaseUrl = this.configService.getOrThrow<string>('fxApi.baseUrl');
+        this.apiTimeoutMs = this.configService.getOrThrow<number>('fxApi.timeoutMs');
+        this.cacheTtlMs = this.configService.getOrThrow<number>('cacheTtlMs');
+        this.preWarmCurrencies = this.configService.getOrThrow<string[]>('preWarmCurrencies');
+        this.spreadPercent = this.configService.getOrThrow<number>('quote.spreadPercent');
+        this.flatFee = this.configService.getOrThrow<number>('quote.flatFee');
+        this.percentFee = this.configService.getOrThrow<number>('quote.percentFee');
+        this.quoteExpiryMs = this.configService.getOrThrow<number>('quote.expiryMs');
+    }
 
     async onModuleInit(): Promise<void> {
-        // Pre-warm cache with USD rates on startup
-        try {
-            await this.fetchRates('USD');
-            this.logger.log('Successfully pre-warmed FX rate cache for USD');
-        } catch (error) {
+        const results = await Promise.allSettled(
+            this.preWarmCurrencies.map((currency) => this.fetchRates(currency)),
+        );
+
+        const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+        if (succeeded > 0) {
+            this.logger.log(`Pre-warmed FX rate cache for ${succeeded}/${this.preWarmCurrencies.length} currencies`);
+        } else {
             this.logger.warn('Failed to pre-warm FX rate cache; will use fallback rates until API is available');
         }
     }
@@ -57,12 +80,12 @@ export class QuoteService implements OnModuleInit {
             );
         }
 
-        // Apply ±2% jitter to simulate rate variation
-        const jitter = 1 + (Math.random() * 0.04 - 0.02);
+        // Apply configurable spread to simulate rate variation
+        const jitter = 1 + (Math.random() * this.spreadPercent * 2 - this.spreadPercent);
         const rate = parseFloat((baseRate * jitter).toFixed(6));
 
-        // Fee = flat $5 + 0.5% of sendAmount
-        const fee = parseFloat((5 + sendAmount * 0.005).toFixed(2));
+        // Fee = flat fee + percentage of sendAmount
+        const fee = parseFloat((this.flatFee + sendAmount * this.percentFee).toFixed(2));
 
         if (fee >= sendAmount) {
             throw new BadRequestException('Send amount is too small to cover fees');
@@ -70,8 +93,7 @@ export class QuoteService implements OnModuleInit {
 
         const payoutAmount = parseFloat(((sendAmount - fee) * rate).toFixed(2));
 
-        // Quote expires in 5 minutes
-        const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+        const expiresAt = new Date(Date.now() + this.quoteExpiryMs).toISOString();
 
         return {
             quoteId: uuidv4(),
@@ -87,13 +109,13 @@ export class QuoteService implements OnModuleInit {
 
     private async fetchRates(baseCurrency: string): Promise<Record<string, number>> {
         const cached = this.rateCache.get(baseCurrency);
-        if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+        if (cached && Date.now() - cached.fetchedAt < this.cacheTtlMs) {
             return cached.rates;
         }
 
         this.logger.log(`Fetching live FX rates for ${baseCurrency} from ExchangeRate-API`);
         const { data } = await firstValueFrom(
-            this.httpService.get(`${API_BASE_URL}/${baseCurrency}`, { timeout: 5000 }),
+            this.httpService.get(`${this.apiBaseUrl}/${baseCurrency}`, { timeout: this.apiTimeoutMs }),
         );
 
         if (data.result !== 'success') {

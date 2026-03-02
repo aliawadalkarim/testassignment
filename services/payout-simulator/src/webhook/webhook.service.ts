@@ -15,22 +15,24 @@ interface WebhookPayload {
 @Injectable()
 export class WebhookService {
     private readonly logger = new Logger(WebhookService.name);
-    private readonly maxRetries = 3;
+
     private readonly webhookUrl: string;
     private readonly webhookSecret: string;
+    private readonly maxRetries: number;
+    private readonly delayMinMs: number;
+    private readonly delayMaxMs: number;
+    private readonly successRate: number;
 
     constructor(
         private readonly httpService: HttpService,
         private readonly configService: ConfigService,
     ) {
-        this.webhookUrl = this.configService.get<string>(
-            'orchestratorWebhookUrl',
-            'http://orchestrator:3000/webhooks/payout-status',
-        );
-        this.webhookSecret = this.configService.get<string>(
-            'webhookSecret',
-            'super-secret-webhook-key-change-me',
-        );
+        this.webhookUrl = this.configService.getOrThrow<string>('orchestratorWebhookUrl');
+        this.webhookSecret = this.configService.getOrThrow<string>('webhookSecret');
+        this.maxRetries = this.configService.getOrThrow<number>('webhook.maxRetries');
+        this.delayMinMs = this.configService.getOrThrow<number>('webhook.delayMinMs');
+        this.delayMaxMs = this.configService.getOrThrow<number>('webhook.delayMaxMs');
+        this.successRate = this.configService.getOrThrow<number>('webhook.successRate');
     }
 
     async scheduleWebhook(
@@ -39,11 +41,9 @@ export class WebhookService {
         amount: number,
         currency: string,
     ): Promise<void> {
-        // Random delay 2-5 seconds to simulate async processing
-        const delayMs = 2000 + Math.random() * 3000;
+        const delayMs = this.delayMinMs + Math.random() * (this.delayMaxMs - this.delayMinMs);
 
-        // ~80% success, ~20% failure
-        const status: 'PAID' | 'FAILED' = Math.random() < 0.8 ? 'PAID' : 'FAILED';
+        const status: 'PAID' | 'FAILED' = Math.random() < this.successRate ? 'PAID' : 'FAILED';
 
         setTimeout(async () => {
             const payload: WebhookPayload = {
@@ -88,7 +88,6 @@ export class WebhookService {
                 );
 
                 if (attempt < this.maxRetries) {
-                    // Exponential backoff: 1s, 2s, 4s
                     const backoffMs = Math.pow(2, attempt) * 1000;
                     await this.sleep(backoffMs);
                 }
