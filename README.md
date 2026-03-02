@@ -9,8 +9,8 @@ A simplified cross-border remittance platform built with **NestJS** (TypeScript)
 │   Orchestrator   │────▶│  FX Service  │     │  Payout Simulator   │
 │   (port 3000)    │     │  (port 3001) │     │   (port 3002)       │
 │                  │────▶│              │     │                     │
-│  - Transfers API │     └──────────────┘     │  - POST /partner/   │
-│  - Compliance    │                          │    payouts           │
+│  - Transfers API │     │  Live rates  │     │  - POST /partner/   │
+│  - Compliance    │     │  via API ────│───▶ ExchangeRate-API
 │  - Webhooks      │◀──── webhook ────────────│  - HMAC signed      │
 │  - State Machine │                          │  - Retry w/ backoff  │
 └────────┬─────────┘                          └─────────────────────┘
@@ -41,7 +41,10 @@ docker-compose up --build
 ## Local Development
 
 ```bash
-# Install dependencies for each service
+# Install dependencies for all services at once (from project root)
+npm run install:all
+
+# Or install individually
 cd services/orchestrator && npm install
 cd ../fx-service && npm install
 cd ../payout-simulator && npm install
@@ -54,6 +57,8 @@ cd services/fx-service && npm run start:dev
 cd services/payout-simulator && npm run start:dev
 cd services/orchestrator && npm run start:dev
 ```
+
+> **Root-level scripts**: `npm run install:all`, `npm run build:all`, and `npm run test:all` are available from the project root for convenience.
 
 ## Running Tests
 
@@ -155,6 +160,14 @@ curl -X POST http://localhost:3000/transfers \
     "sendAmount": 15000, "sendCurrency": "USD", "payoutCurrency": "EUR"
   }'
 ```
+
+## FX Rate Source
+
+The FX Service fetches **live exchange rates** from the [ExchangeRate-API](https://www.exchangerate-api.com/) (open access, no API key required). Rates are cached in memory for 5 minutes to minimize external calls. If the API is unreachable, the service falls back to a set of hardcoded rates for common currency pairs (USD, EUR, GBP).
+
+- **160+ currencies** supported via live rates
+- **Cache TTL**: 5 minutes
+- **Pre-warming**: USD rates are fetched on service startup
 
 ## Environment Variables
 
