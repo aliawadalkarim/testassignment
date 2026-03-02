@@ -138,6 +138,9 @@ export class Transfer {
         reviewerId?: string;
     };
 
+    @Prop({ unique: true, sparse: true })
+    idempotencyKey?: string;
+
     @Prop()
     partnerPayoutId?: string;
 
@@ -150,3 +153,4 @@ export const TransferSchema = SchemaFactory.createForClass(Transfer);
 // Indexes
 TransferSchema.index({ 'sender.senderId': 1 });
 TransferSchema.index({ partnerPayoutId: 1 });
+TransferSchema.index({ idempotencyKey: 1 });

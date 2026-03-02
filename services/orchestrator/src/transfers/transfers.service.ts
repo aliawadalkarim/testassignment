@@ -34,12 +34,20 @@ export class TransfersService {
      * Create a new transfer, fetch a quote, and persist in QUOTED state.
      *
      * The quote is fetched BEFORE persisting to avoid orphaned CREATED records
-     * when the FX service is unreachable.
+     * when the FX service is unreachable. Supports idempotency keys for safe retries.
      */
-    async create(dto: CreateTransferDto): Promise<TransferDocument> {
+    async create(dto: CreateTransferDto, idempotencyKey?: string): Promise<TransferDocument> {
+        if (idempotencyKey) {
+            const existing = await this.transferModel.findOne({ idempotencyKey, 'sender.senderId': dto.sender.senderId }).exec();
+            if (existing) {
+                this.logger.log(`Idempotency hit: returning existing transfer ${existing.transferId} for key ${idempotencyKey}`);
+                return existing;
+            }
+        }
+
         const transferId = uuidv4();
 
-        this.logger.log(`Creating transfer ${transferId}`);
+        this.logger.log(`Creating transfer ${transferId}${idempotencyKey ? ` (idempotencyKey: ${idempotencyKey})` : ''}`);
 
         // Fetch quote from FX service BEFORE persisting the transfer
         let quote: Record<string, unknown>;
@@ -73,6 +81,7 @@ export class TransfersService {
         // Persist transfer directly in QUOTED state with quote attached
         const transfer = new this.transferModel({
             transferId,
+            idempotencyKey,
             sender: dto.sender,
             recipient: dto.recipient,
             sendAmount: dto.sendAmount,

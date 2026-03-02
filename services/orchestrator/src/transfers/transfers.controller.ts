@@ -7,6 +7,7 @@ import {
     Query,
     ParseIntPipe,
     DefaultValuePipe,
+    Headers,
 } from '@nestjs/common';
 import { TransfersService } from './transfers.service';
 import { CreateTransferDto } from './dto/create-transfer.dto';
@@ -16,8 +17,11 @@ export class TransfersController {
     constructor(private readonly transfersService: TransfersService) { }
 
     @Post()
-    create(@Body() createTransferDto: CreateTransferDto) {
-        return this.transfersService.create(createTransferDto);
+    create(
+        @Body() createTransferDto: CreateTransferDto,
+        @Headers('x-idempotency-key') idempotencyKey?: string,
+    ) {
+        return this.transfersService.create(createTransferDto, idempotencyKey);
     }
 
     @Get()

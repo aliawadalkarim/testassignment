@@ -21,6 +21,11 @@ A simplified cross-border remittance platform built with **NestJS** (TypeScript)
     └─────────┘
 ```
 
+### Features
+- **Idempotent Transfers:** Safe retries using the `X-Idempotency-Key` header.
+- **Configurable:** Settings, fees, and thresholds are driven by environment variables.
+- **API Docs:** OpenAPI (Swagger) documentation available at `/api`.
+
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) & Docker Compose
@@ -36,6 +41,8 @@ docker-compose up --build
 # Orchestrator: http://localhost:3000
 # FX Service:   http://localhost:3001
 # Payout Sim:   http://localhost:3002
+
+**Interactive API Documentation (Swagger)** is available at `http://localhost:<port>/api` for each service.
 ```
 
 ## Local Development
@@ -129,8 +136,9 @@ curl -X POST http://localhost:3000/transfers/<transferId>/compliance/reject \
 
 ### 6. List Transfers by Sender
 
+Supports pagination via `page` and `limit` queries.
 ```bash
-curl http://localhost:3000/transfers?senderId=sender-001
+curl "http://localhost:3000/transfers?senderId=sender-001&page=1&limit=20"
 ```
 
 ### 7. View Metrics
@@ -167,7 +175,7 @@ The FX Service fetches **live exchange rates** from the [ExchangeRate-API](https
 
 - **160+ currencies** supported via live rates
 - **Cache TTL**: 5 minutes
-- **Pre-warming**: USD rates are fetched on service startup
+- **Pre-warming**: Common currencies (`AED`, `USD`, `EUR`, `GBP`) are aggressively fetched and cached at service startup.
 
 ## Environment Variables
 
