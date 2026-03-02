@@ -95,12 +95,26 @@ describe('Happy Path (e2e)', () => {
                 .expect(404);
         });
 
-        it('should list transfers by senderId', async () => {
+        it('should list transfers by senderId with pagination', async () => {
             const response = await request(app.getHttpServer())
                 .get('/transfers?senderId=sender-001')
                 .expect(200);
 
-            expect(Array.isArray(response.body)).toBe(true);
+            expect(response.body.data).toBeDefined();
+            expect(Array.isArray(response.body.data)).toBe(true);
+            expect(response.body.page).toBe(1);
+            expect(response.body.limit).toBe(20);
+            expect(typeof response.body.total).toBe('number');
+        });
+
+        it('should support pagination query params', async () => {
+            const response = await request(app.getHttpServer())
+                .get('/transfers?page=1&limit=5')
+                .expect(200);
+
+            expect(response.body.data).toBeDefined();
+            expect(response.body.page).toBe(1);
+            expect(response.body.limit).toBe(5);
         });
     });
 
