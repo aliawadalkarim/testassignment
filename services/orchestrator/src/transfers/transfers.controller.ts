@@ -5,6 +5,8 @@ import {
     Body,
     Param,
     Query,
+    ParseIntPipe,
+    DefaultValuePipe,
 } from '@nestjs/common';
 import { TransfersService } from './transfers.service';
 import { CreateTransferDto } from './dto/create-transfer.dto';
@@ -19,8 +21,12 @@ export class TransfersController {
     }
 
     @Get()
-    findAll(@Query('senderId') senderId?: string) {
-        return this.transfersService.findAll(senderId);
+    findAll(
+        @Query('senderId') senderId?: string,
+        @Query('page', new DefaultValuePipe(1), ParseIntPipe) page?: number,
+        @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit?: number,
+    ) {
+        return this.transfersService.findAll(senderId, page, limit);
     }
 
     @Get('metrics')

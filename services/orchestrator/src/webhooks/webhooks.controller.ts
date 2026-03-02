@@ -1,6 +1,6 @@
 import { Controller, Post, Body, UseGuards, Logger } from '@nestjs/common';
 import { HmacGuard } from './guards/hmac.guard';
-import { TransfersService } from '../transfers/transfers.service';
+import { PayoutWorkflowService } from '../transfers/services/payout-workflow.service';
 
 interface PayoutWebhookPayload {
     partnerPayoutId: string;
@@ -15,7 +15,7 @@ interface PayoutWebhookPayload {
 export class WebhooksController {
     private readonly logger = new Logger(WebhooksController.name);
 
-    constructor(private readonly transfersService: TransfersService) { }
+    constructor(private readonly payoutWorkflow: PayoutWorkflowService) { }
 
     @Post('payout-status')
     @UseGuards(HmacGuard)
@@ -23,8 +23,7 @@ export class WebhooksController {
         this.logger.log(
             `Webhook received: partnerPayoutId=${payload.partnerPayoutId} status=${payload.status}`,
         );
-
-        const transfer = await this.transfersService.handlePayoutWebhook(
+        const transfer = await this.payoutWorkflow.handlePayoutWebhook(
             payload.partnerPayoutId,
             payload.status,
             payload.amount,

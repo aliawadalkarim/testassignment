@@ -3,7 +3,6 @@ import {
     Logger,
     NotFoundException,
     BadRequestException,
-    ConflictException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { ConfigService } from '@nestjs/config';
@@ -13,7 +12,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { Transfer, TransferDocument } from './schemas/transfer.schema';
 import { TransferStatus } from '../common/interfaces';
 import { StateMachineService } from '../state-machine/state-machine.service';
-import { ComplianceService } from '../compliance/compliance.service';
+import { PayoutWorkflowService } from './services/payout-workflow.service';
+import { ComplianceWorkflowService } from './services/compliance-workflow.service';
 import { CreateTransferDto } from './dto/create-transfer.dto';
 
 @Injectable()
@@ -24,37 +24,25 @@ export class TransfersService {
         @InjectModel(Transfer.name)
         private readonly transferModel: Model<TransferDocument>,
         private readonly stateMachine: StateMachineService,
-        private readonly complianceService: ComplianceService,
+        private readonly payoutWorkflow: PayoutWorkflowService,
+        private readonly complianceWorkflow: ComplianceWorkflowService,
         private readonly httpService: HttpService,
         private readonly configService: ConfigService,
     ) { }
 
     /**
-     * Create a new transfer, fetch a quote, and transition to QUOTED.
+     * Create a new transfer, fetch a quote, and persist in QUOTED state.
+     *
+     * The quote is fetched BEFORE persisting to avoid orphaned CREATED records
+     * when the FX service is unreachable.
      */
     async create(dto: CreateTransferDto): Promise<TransferDocument> {
         const transferId = uuidv4();
 
         this.logger.log(`Creating transfer ${transferId}`);
 
-        // Create transfer in CREATED state
-        const transfer = new this.transferModel({
-            transferId,
-            sender: dto.sender,
-            recipient: dto.recipient,
-            sendAmount: dto.sendAmount,
-            sendCurrency: dto.sendCurrency,
-            payoutCurrency: dto.payoutCurrency,
-            status: TransferStatus.CREATED,
-            stateHistory: [
-                { state: TransferStatus.CREATED, timestamp: new Date() },
-            ],
-            version: 0,
-        });
-
-        await transfer.save();
-
-        // Fetch quote from FX service
+        // Fetch quote from FX service BEFORE persisting the transfer
+        let quote: Record<string, unknown>;
         try {
             const fxServiceUrl = this.configService.get<string>('fxServiceUrl');
             const quoteResponse = await this.httpService.axiosRef.post(
@@ -68,16 +56,30 @@ export class TransfersService {
                 },
                 { timeout: 5000 },
             );
-
-            const quote = quoteResponse.data;
-
-            // Transition to QUOTED
-            this.stateMachine.validateTransition(
-                TransferStatus.CREATED,
-                TransferStatus.QUOTED,
+            quote = quoteResponse.data;
+        } catch (error) {
+            this.logger.error(
+                `Failed to fetch quote for transfer ${transferId}: ${error instanceof Error ? error.message : error}`,
             );
+            throw new BadRequestException('Failed to obtain FX quote');
+        }
 
-            transfer.quote = {
+        // Validate the state transition
+        this.stateMachine.validateTransition(
+            TransferStatus.CREATED,
+            TransferStatus.QUOTED,
+        );
+
+        // Persist transfer directly in QUOTED state with quote attached
+        const transfer = new this.transferModel({
+            transferId,
+            sender: dto.sender,
+            recipient: dto.recipient,
+            sendAmount: dto.sendAmount,
+            sendCurrency: dto.sendCurrency,
+            payoutCurrency: dto.payoutCurrency,
+            status: TransferStatus.QUOTED,
+            quote: {
                 quoteId: quote.quoteId,
                 rate: quote.rate,
                 fee: quote.fee,
@@ -85,24 +87,21 @@ export class TransfersService {
                 sendAmount: quote.sendAmount,
                 sendCurrency: quote.sendCurrency,
                 payoutCurrency: quote.payoutCurrency,
-                expiresAt: new Date(quote.expiresAt),
-            };
-            transfer.status = TransferStatus.QUOTED;
-            transfer.stateHistory.push({
-                state: TransferStatus.QUOTED,
-                timestamp: new Date(),
-                metadata: `Quote ${quote.quoteId} received`,
-            });
-            transfer.version += 1;
+                expiresAt: new Date(quote.expiresAt as string),
+            },
+            stateHistory: [
+                { state: TransferStatus.CREATED, timestamp: new Date() },
+                {
+                    state: TransferStatus.QUOTED,
+                    timestamp: new Date(),
+                    metadata: `Quote ${quote.quoteId} received`,
+                },
+            ],
+            version: 1,
+        });
 
-            await transfer.save();
-            this.logger.log(`Transfer ${transferId} quoted (quoteId: ${quote.quoteId})`);
-        } catch (error) {
-            this.logger.error(
-                `Failed to fetch quote for transfer ${transferId}: ${error instanceof Error ? error.message : error}`,
-            );
-            throw new BadRequestException('Failed to obtain FX quote');
-        }
+        await transfer.save();
+        this.logger.log(`Transfer ${transferId} quoted (quoteId: ${quote.quoteId})`);
 
         return transfer;
     }
@@ -119,14 +118,29 @@ export class TransfersService {
     }
 
     /**
-     * List transfers, optionally filtered by senderId.
+     * List transfers with optional senderId filter and pagination.
      */
-    async findAll(senderId?: string): Promise<TransferDocument[]> {
+    async findAll(
+        senderId?: string,
+        page = 1,
+        limit = 20,
+    ): Promise<{ data: TransferDocument[]; total: number; page: number; limit: number }> {
         const filter: Record<string, unknown> = {};
         if (senderId) {
             filter['sender.senderId'] = senderId;
         }
-        return this.transferModel.find(filter).sort({ createdAt: -1 }).exec();
+
+        const [data, total] = await Promise.all([
+            this.transferModel
+                .find(filter)
+                .sort({ createdAt: -1 })
+                .skip((page - 1) * limit)
+                .limit(limit)
+                .exec(),
+            this.transferModel.countDocuments(filter).exec(),
+        ]);
+
+        return { data, total, page, limit };
     }
 
     /**
@@ -164,40 +178,12 @@ export class TransfersService {
         });
         transfer.version += 1;
 
-        await this.saveWithOptimisticLock(transfer);
+        await this.payoutWorkflow.saveWithOptimisticLock(transfer);
 
         this.logger.log(`Transfer ${transferId} confirmed`);
 
-        // Run compliance screening
-        const complianceResult = this.complianceService.screen(
-            transfer.recipient.country,
-            transfer.recipient.name,
-            transfer.sender.name,
-            transfer.sendAmount,
-            transferId,
-        );
-
-        // Transition based on compliance result
-        this.stateMachine.validateTransition(
-            TransferStatus.CONFIRMED,
-            complianceResult.status,
-        );
-
-        transfer.status = complianceResult.status;
-        transfer.complianceDecision = complianceResult.decision;
-        transfer.stateHistory.push({
-            state: complianceResult.status,
-            timestamp: new Date(),
-            metadata: `Compliance: ${complianceResult.decision.decision} (rules: ${complianceResult.decision.triggeredRules.join(', ')})`,
-        });
-        transfer.version += 1;
-
-        await this.saveWithOptimisticLock(transfer);
-
-        // If approved, initiate payout
-        if (complianceResult.status === TransferStatus.COMPLIANCE_APPROVED) {
-            await this.initiatePayout(transfer);
-        }
+        // Run compliance screening (delegates to ComplianceWorkflowService)
+        await this.complianceWorkflow.runScreening(transfer);
 
         return transfer;
     }
@@ -220,7 +206,7 @@ export class TransfersService {
         });
         transfer.version += 1;
 
-        await this.saveWithOptimisticLock(transfer);
+        await this.payoutWorkflow.saveWithOptimisticLock(transfer);
 
         this.logger.log(`Transfer ${transferId} cancelled`);
         return transfer;
@@ -235,34 +221,7 @@ export class TransfersService {
         reason?: string,
     ): Promise<TransferDocument> {
         const transfer = await this.findById(transferId);
-
-        this.stateMachine.validateTransition(
-            transfer.status as TransferStatus,
-            TransferStatus.COMPLIANCE_APPROVED,
-        );
-
-        transfer.status = TransferStatus.COMPLIANCE_APPROVED;
-        transfer.complianceDecision = {
-            decision: 'APPROVED',
-            triggeredRules: transfer.complianceDecision?.triggeredRules || [],
-            timestamp: new Date(),
-            reviewerId,
-        };
-        transfer.stateHistory.push({
-            state: TransferStatus.COMPLIANCE_APPROVED,
-            timestamp: new Date(),
-            metadata: `Manual approval by ${reviewerId || 'unknown'}${reason ? `: ${reason}` : ''}`,
-        });
-        transfer.version += 1;
-
-        await this.saveWithOptimisticLock(transfer);
-
-        this.logger.log(`Transfer ${transferId} compliance approved by ${reviewerId}`);
-
-        // Initiate payout
-        await this.initiatePayout(transfer);
-
-        return transfer;
+        return this.complianceWorkflow.approve(transfer, reviewerId, reason);
     }
 
     /**
@@ -274,112 +233,18 @@ export class TransfersService {
         reason?: string,
     ): Promise<TransferDocument> {
         const transfer = await this.findById(transferId);
-
-        this.stateMachine.validateTransition(
-            transfer.status as TransferStatus,
-            TransferStatus.COMPLIANCE_REJECTED,
-        );
-
-        transfer.status = TransferStatus.COMPLIANCE_REJECTED;
-        transfer.complianceDecision = {
-            decision: 'REJECTED',
-            triggeredRules: transfer.complianceDecision?.triggeredRules || [],
-            timestamp: new Date(),
-            reviewerId,
-        };
-        transfer.stateHistory.push({
-            state: TransferStatus.COMPLIANCE_REJECTED,
-            timestamp: new Date(),
-            metadata: `Manual rejection by ${reviewerId || 'unknown'}${reason ? `: ${reason}` : ''}`,
-        });
-        transfer.version += 1;
-
-        await this.saveWithOptimisticLock(transfer);
-
-        this.logger.log(`Transfer ${transferId} compliance rejected by ${reviewerId}`);
-        return transfer;
+        return this.complianceWorkflow.reject(transfer, reviewerId, reason);
     }
 
     /**
      * Handle webhook from payout partner.
-     * Idempotent: ignores duplicate webhooks for already-terminal states.
      */
     async handlePayoutWebhook(
         partnerPayoutId: string,
         status: 'PAID' | 'FAILED',
         amount: number,
     ): Promise<TransferDocument> {
-        const transfer = await this.transferModel
-            .findOne({ partnerPayoutId })
-            .exec();
-
-        if (!transfer) {
-            throw new NotFoundException(
-                `Transfer with partnerPayoutId ${partnerPayoutId} not found`,
-            );
-        }
-
-        const currentStatus = transfer.status as TransferStatus;
-
-        // Idempotency: if already in terminal state, ignore duplicate webhook
-        if (this.stateMachine.isTerminalState(currentStatus)) {
-            this.logger.warn(
-                `Ignoring duplicate webhook for transfer ${transfer.transferId} (already ${currentStatus})`,
-            );
-            return transfer;
-        }
-
-        if (status === 'PAID') {
-            this.stateMachine.validateTransition(currentStatus, TransferStatus.PAID);
-
-            transfer.status = TransferStatus.PAID;
-            transfer.financialSummary = {
-                paidAmount: amount,
-                feesCharged: transfer.confirmedQuoteSnapshot?.fee,
-            };
-            transfer.stateHistory.push({
-                state: TransferStatus.PAID,
-                timestamp: new Date(),
-                metadata: `Payout confirmed: ${amount} ${transfer.payoutCurrency}`,
-            });
-        } else {
-            this.stateMachine.validateTransition(currentStatus, TransferStatus.FAILED);
-
-            transfer.status = TransferStatus.FAILED;
-            transfer.stateHistory.push({
-                state: TransferStatus.FAILED,
-                timestamp: new Date(),
-                metadata: 'Payout failed',
-            });
-            transfer.version += 1;
-            await this.saveWithOptimisticLock(transfer);
-
-            // Auto-refund on failure
-            this.stateMachine.validateTransition(
-                TransferStatus.FAILED,
-                TransferStatus.REFUNDED,
-            );
-
-            transfer.status = TransferStatus.REFUNDED;
-            transfer.financialSummary = {
-                refundedAmount: transfer.sendAmount,
-                feesCharged: 0,
-            };
-            transfer.stateHistory.push({
-                state: TransferStatus.REFUNDED,
-                timestamp: new Date(),
-                metadata: `Auto-refunded ${transfer.sendAmount} ${transfer.sendCurrency}`,
-            });
-        }
-
-        transfer.version += 1;
-        await this.saveWithOptimisticLock(transfer);
-
-        this.logger.log(
-            `Transfer ${transfer.transferId} webhook processed: ${status} → ${transfer.status}`,
-        );
-
-        return transfer;
+        return this.payoutWorkflow.handlePayoutWebhook(partnerPayoutId, status, amount);
     }
 
     /**
@@ -396,89 +261,5 @@ export class TransfersService {
         }
         metrics.total = Object.values(metrics).reduce((a, b) => a + b, 0);
         return metrics;
-    }
-
-    /**
-     * Initiate payout by calling the payout partner simulator.
-     */
-    private async initiatePayout(transfer: TransferDocument): Promise<void> {
-        this.stateMachine.validateTransition(
-            transfer.status as TransferStatus,
-            TransferStatus.PAYOUT_PENDING,
-        );
-
-        try {
-            const payoutServiceUrl = this.configService.get<string>('payoutServiceUrl');
-            const response = await this.httpService.axiosRef.post(
-                `${payoutServiceUrl}/partner/payouts`,
-                {
-                    transferId: transfer.transferId,
-                    amount: transfer.confirmedQuoteSnapshot!.payoutAmount,
-                    currency: transfer.payoutCurrency,
-                    recipientName: transfer.recipient.name,
-                    payoutMethod: transfer.recipient.payoutMethod,
-                },
-                { timeout: 5000 },
-            );
-
-            transfer.partnerPayoutId = response.data.partnerPayoutId;
-            transfer.status = TransferStatus.PAYOUT_PENDING;
-            transfer.stateHistory.push({
-                state: TransferStatus.PAYOUT_PENDING,
-                timestamp: new Date(),
-                metadata: `Payout initiated: ${response.data.partnerPayoutId}`,
-            });
-            transfer.version += 1;
-
-            await this.saveWithOptimisticLock(transfer);
-
-            this.logger.log(
-                `Transfer ${transfer.transferId} payout initiated (${response.data.partnerPayoutId})`,
-            );
-        } catch (error) {
-            this.logger.error(
-                `Failed to initiate payout for transfer ${transfer.transferId}: ${error instanceof Error ? error.message : error}`,
-            );
-            throw new BadRequestException(
-                'Failed to initiate payout with partner. Please retry.',
-            );
-        }
-    }
-
-    /**
-     * Save with optimistic concurrency control.
-     * Checks the version field to prevent lost updates.
-     */
-    private async saveWithOptimisticLock(
-        transfer: TransferDocument,
-    ): Promise<void> {
-        const expectedVersion = transfer.version;
-        const result = await this.transferModel
-            .findOneAndUpdate(
-                {
-                    transferId: transfer.transferId,
-                    version: expectedVersion - 1,
-                },
-                {
-                    $set: {
-                        status: transfer.status,
-                        stateHistory: transfer.stateHistory,
-                        quote: transfer.quote,
-                        confirmedQuoteSnapshot: transfer.confirmedQuoteSnapshot,
-                        financialSummary: transfer.financialSummary,
-                        complianceDecision: transfer.complianceDecision,
-                        partnerPayoutId: transfer.partnerPayoutId,
-                        version: expectedVersion,
-                    },
-                },
-                { new: true },
-            )
-            .exec();
-
-        if (!result) {
-            throw new ConflictException(
-                `Optimistic lock failed for transfer ${transfer.transferId}. Concurrent modification detected.`,
-            );
-        }
     }
 }

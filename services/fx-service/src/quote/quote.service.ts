@@ -70,8 +70,8 @@ export class QuoteService implements OnModuleInit {
 
         const payoutAmount = parseFloat(((sendAmount - fee) * rate).toFixed(2));
 
-        // Quote expires in 60 seconds
-        const expiresAt = new Date(Date.now() + 60 * 1000).toISOString();
+        // Quote expires in 5 minutes
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
         return {
             quoteId: uuidv4(),

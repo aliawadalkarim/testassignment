@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import axios from 'axios';
+import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 
 interface WebhookPayload {
@@ -18,12 +19,18 @@ export class WebhookService {
     private readonly webhookUrl: string;
     private readonly webhookSecret: string;
 
-    constructor() {
-        this.webhookUrl =
-            process.env.ORCHESTRATOR_WEBHOOK_URL ||
-            'http://orchestrator:3000/webhooks/payout-status';
-        this.webhookSecret =
-            process.env.WEBHOOK_SECRET || 'super-secret-webhook-key-change-me';
+    constructor(
+        private readonly httpService: HttpService,
+        private readonly configService: ConfigService,
+    ) {
+        this.webhookUrl = this.configService.get<string>(
+            'orchestratorWebhookUrl',
+            'http://orchestrator:3000/webhooks/payout-status',
+        );
+        this.webhookSecret = this.configService.get<string>(
+            'webhookSecret',
+            'super-secret-webhook-key-change-me',
+        );
     }
 
     async scheduleWebhook(
@@ -62,7 +69,7 @@ export class WebhookService {
                 const body = JSON.stringify(payload);
                 const signature = this.signPayload(body);
 
-                await axios.post(this.webhookUrl, payload, {
+                await this.httpService.axiosRef.post(this.webhookUrl, payload, {
                     headers: {
                         'Content-Type': 'application/json',
                         'X-Webhook-Signature': signature,
