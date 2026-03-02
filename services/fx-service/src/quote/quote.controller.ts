@@ -7,7 +7,7 @@ export class QuoteController {
     constructor(private readonly quoteService: QuoteService) { }
 
     @Post('quote')
-    createQuote(@Body() createQuoteDto: CreateQuoteDto) {
+    async createQuote(@Body() createQuoteDto: CreateQuoteDto) {
         return this.quoteService.generateQuote(createQuoteDto);
     }
 }
